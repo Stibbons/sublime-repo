@@ -7,14 +7,17 @@ import functools
 import os.path
 import time
 
-# when sublime loads a plugin it's cd'd into the plugin directory. Thus
-# __file__ is useless for my purposes. What I want is "Packages/Repo", but
-# allowing for the possibility that someone has renamed the file.
-# Fun discovery: Sublime on windows still requires posix path separators.
-PLUGIN_DIRECTORY = os.getcwd().replace(
-    os.path.normpath(os.path.join(os.getcwd(), '..', '..')) + os.path.sep, '').replace(os.path.sep, '/')
+# In a complete inversion from ST2, in ST3 when a plugin is loaded we
+# actually can trust __file__.
+# Goal is to get: "Packages/Repo", allowing for people who rename things
 
 repo_root_cache = {}
+
+
+def find_plugin_directory(f):
+    dirname = os.path.split(os.path.dirname(f))[-1]
+    return "Packages/" + dirname.replace(".sublime-package", "")
+PLUGIN_DIRECTORY = find_plugin_directory(__file__)
 
 
 def main_thread(callback, *args, **kwargs):
@@ -87,6 +90,51 @@ def _make_text_safeish(text, fallback_encoding, method='decode'):
     return unitext
 
 
+def _test_paths_for_executable(paths, test_file):
+    for directory in paths:
+        file_path = os.path.join(directory, test_file)
+        if os.path.exists(file_path) and os.access(file_path, os.X_OK):
+            return file_path
+
+
+def find_repo():
+    # It turns out to be difficult to reliably run repo, with varying paths
+    # and subprocess environments across different platforms. So. Let's hack
+    # this a bit.
+    # (Yes, I could fall back on a hardline "set your system path properly"
+    # attitude. But that involves a lot more arguing with people.)
+    path = os.environ.get('PATH', '').split(os.pathsep)
+    if os.name == 'nt':
+        repo_cmd = 'repo.exe'
+    else:
+        repo_cmd = 'repo'
+
+    repo_path = _test_paths_for_executable(path, repo_cmd)
+
+    if not repo_path:
+        # /usr/local/bin:/usr/local/repo/bin
+        if os.name == 'nt':
+            extra_paths = (
+                os.path.join(os.environ["ProgramFiles"], "repo", "bin"),
+                os.path.join(os.environ["ProgramFiles(x86)"], "repo", "bin"),
+            )
+        else:
+            extra_paths = (
+                '/usr/local/bin',
+                '/usr/local/repo/bin',
+            )
+        repo_path = _test_paths_for_executable(extra_paths, repo_cmd)
+    return repo_path
+
+
+REPO = find_repo()
+commands_working = 0
+
+
+def are_commands_working():
+    return commands_working != 0
+
+
 class CommandThread(threading.Thread):
 
     def __init__(self, command, on_done, working_dir="", fallback_encoding="", **kwargs):
@@ -106,41 +154,63 @@ class CommandThread(threading.Thread):
         self.kwargs = kwargs
 
     def run(self):
+        global commands_working
+        # Ignore directories that no longer exist
+        if not os.path.isdir(self.working_dir):
+            return
+
+        commands_working = commands_working + 1
+        output = ''
+        callback = self.on_done
         try:
+            if self.working_dir != "":
+                os.chdir(self.working_dir)
+            # Windows needs startupinfo in order to start process in background
+            startupinfo = None
+            if os.name == 'nt':
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 
-            # Ignore directories that no longer exist
-            if os.path.isdir(self.working_dir):
+            shell = False
+            if sublime.platform() == 'windows':
+                shell = True
 
-                # Per http://bugs.python.org/issue8557 shell=True is required to
-                # get $PATH on Windows. Yay portable code.
-                shell = os.name == 'nt'
-                if self.working_dir != "":
-                    os.chdir(self.working_dir)
+            env = os.environ.copy()
+            if sublime.platform() == 'windows' and 'HOME' not in env:
+                env['HOME'] = env['USERPROFILE']
 
-                proc = subprocess.Popen(self.command,
-                                        stdout=self.stdout, stderr=subprocess.STDOUT,
-                                        stdin=subprocess.PIPE,
-                                        shell=shell, universal_newlines=True,
-                                        env=os.environ)
-                output = proc.communicate(self.stdin)[0]
-                if not output:
-                    output = ''
-                # if sublime's python gets bumped to 2.7 we can just do:
-                # output = subprocess.check_output(self.command)
-                main_thread(self.on_done,
-                            _make_text_safeish(output, self.fallback_encoding), **self.kwargs)
-
+            # universal_newlines seems to break `log` in python3
+            proc = subprocess.Popen(self.command,
+                                    stdout=self.stdout, stderr=subprocess.STDOUT,
+                                    stdin=subprocess.PIPE, startupinfo=startupinfo,
+                                    shell=shell, universal_newlines=False,
+                                    env=env)
+            output = proc.communicate(self.stdin)[0]
+            if not output:
+                output = ''
+            output = _make_text_safeish(output, self.fallback_encoding)
         except subprocess.CalledProcessError as e:
-            main_thread(self.on_done, e.returncode)
+            output = e.returncode
         except OSError as e:
+            callback = sublime.error_message
             if e.errno == 2:
-                main_thread(
-                    sublime.error_message,
-                    "Repo binary could not be found in PATH\n\n"
-                    "Consider using the repo_command setting for the Repo plugin\n\nPATH is: %s"
-                    % os.environ['PATH'])
+                output = ("Repo binary could not be found in PATH\n\n"
+                          "Consider using the repo_command setting for the Repo plugin\n\n"
+                          "PATH is: %s") % os.environ['PATH']
             else:
-                raise e
+                output = e.strerror
+        finally:
+            commands_working = commands_working - 1
+            main_thread(callback, output, **self.kwargs)
+
+
+class RepoScratchOutputCommand(sublime_plugin.TextCommand):
+
+    def run(self, edit, output='', output_file=None, clear=False):
+        if clear:
+            region = sublime.Region(0, self.view.size())
+            self.view.erase(edit, region)
+        self.view.insert(edit, 0, output)
 
 
 # A base for all commands
@@ -148,7 +218,7 @@ class RepoCommand(object):
     may_change_files = False
 
     def run_command(self, command, callback=None, show_status=True,
-                    filter_empty_args=True, no_save=False, **kwargs):
+                    filter_empty_args=True, no_save=False, wait_for_lock=True, **kwargs):
         if filter_empty_args:
             command = [arg for arg in command if arg]
         if 'working_dir' not in kwargs:
@@ -159,11 +229,24 @@ class RepoCommand(object):
             kwargs['fallback_encoding'] = self.active_view().settings().get(
                 'fallback_encoding').rpartition('(')[2].rpartition(')')[0]
 
+        root = repo_root(self.get_working_dir())
+        if wait_for_lock and root and os.path.exists(os.path.join(root, '.repo', 'index.lock')):
+            print("waiting for index.lock", command)
+            do_when(lambda: not os.path.exists(os.path.join(root, '.repo', 'index.lock')),
+                    self.run_command, command, callback=callback, show_status=show_status,
+                    filter_empty_args=filter_empty_args, no_save=no_save, wait_for_lock=wait_for_lock, **kwargs)
+
         s = sublime.load_settings("Repo.sublime-settings")
         if s.get('save_first') and self.active_view() and self.active_view().is_dirty() and not no_save:
             self.active_view().run_command('save')
-        if command[0] == 'repo' and s.get('repo_command'):
-            command[0] = s.get('repo_command')
+        if command[0] == 'repo':
+            us = sublime.load_settings('Preferences.sublime-settings')
+            if s.get('repo_command') or us.get('repo_binary'):
+                command[0] = s.get('repo_command') or us.get('repo_binary')
+            elif REPO:
+                command[0] = REPO
+        if command[0] == 'repok' and s.get('repok_command'):
+            command[0] = s.get('repok_command')
         if command[0] == 'repo-flow' and s.get('repo_flow_command'):
             command[0] = s.get('repo_flow_command')
         if not callback:
@@ -176,7 +259,7 @@ class RepoCommand(object):
             message = kwargs.get('status_message', False) or ' '.join(command)
             sublime.status_message(message)
 
-    def generic_done(self, result):
+    def generic_done(self, result, **kw):
         if self.may_change_files and self.active_view() and self.active_view().file_name():
             if self.active_view().is_dirty():
                 result = "WARNING: Current view is dirty.\n\n"
@@ -200,12 +283,11 @@ class RepoCommand(object):
     def _output_to_view(self, output_file, output, clear=False,
                         syntax="Packages/Diff/Diff.tmLanguage", **kwargs):
         output_file.set_syntax_file(syntax)
-        edit = output_file.begin_edit()
-        if clear:
-            region = sublime.Region(0, self.output_view.size())
-            output_file.erase(edit, region)
-        output_file.insert(edit, 0, output)
-        output_file.end_edit(edit)
+        args = {
+            'output': output,
+            'clear': clear
+        }
+        output_file.run_command('repo_scratch_output', args)
 
     def scratch(self, output, title=False, position=None, **kwargs):
         scratch_file = self.get_window().new_file()
@@ -251,9 +333,9 @@ class RepoWindowCommand(RepoCommand, sublime_plugin.WindowCommand):
     # that the user intends Repo commands to run against when there's only
     # only one.
     def is_enabled(self):
-        raise Exception(self._active_file_name())
         if self._active_file_name() or len(self.window.folders()) == 1:
             return bool(repo_root(self.get_working_dir()))
+        return False
 
     def get_file_name(self):
         return ''
@@ -278,6 +360,7 @@ class RepoWindowCommand(RepoCommand, sublime_plugin.WindowCommand):
         return self.window
 
 
+# A base for all repo commands that work with the file in the active view
 class RepoTextCommand(RepoCommand, sublime_plugin.TextCommand):
 
     def active_view(self):
@@ -287,6 +370,7 @@ class RepoTextCommand(RepoCommand, sublime_plugin.TextCommand):
         # First, is this actually a file on the file system?
         if self.view.file_name() and len(self.view.file_name()) > 0:
             return bool(repo_root(self.get_working_dir()))
+        return False
 
     def get_file_name(self):
         return os.path.basename(self.view.file_name())
@@ -313,15 +397,15 @@ class RepoTextCommand(RepoCommand, sublime_plugin.TextCommand):
         return self.view.window() or sublime.active_window()
 
 
+# A few miscellaneous commands
+
+
 class RepoCustomCommand(RepoWindowCommand):
     may_change_files = True
 
-    def run(self, command=None):
-        if command is None:
-            self.get_window().show_input_panel("Repo command", "",
-                                               self.on_input, None, None)
-        else:
-            self.on_input(command)
+    def run(self):
+        self.get_window().show_input_panel("Repo command", "",
+                                           self.on_input, None, None)
 
     def on_input(self, command):
         command = str(command)  # avoiding unicode
@@ -329,11 +413,58 @@ class RepoCustomCommand(RepoWindowCommand):
             self.panel("No repo command provided")
             return
         import shlex
-        cmds = [c.strip() for c in command.split(';') if c.strip() != '']
-        for cmd in cmds:
-            command_splitted = ['repo'] + shlex.split(cmd)
-            print(command_splitted)
-            self.run_command(command_splitted)
+        command_splitted = ['repo'] + shlex.split(command)
+        print(command_splitted)
+        self.run_command(command_splitted)
+
+
+class RepoRawCommand(RepoWindowCommand):
+    may_change_files = True
+
+    def run(self, **args):
+        self.command = str(args.get('command', ''))
+        show_in = str(args.get('show_in', 'pane_below'))
+
+        if self.command.strip() == "":
+            self.panel("No repo command provided")
+            return
+        import shlex
+        command_split = shlex.split(self.command)
+
+        if args.get('append_current_file', False) and self._active_file_name():
+            command_split.extend(('--', self._active_file_name()))
+
+        print(command_split)
+
+        self.may_change_files = bool(args.get('may_change_files', True))
+
+        if show_in == 'pane_below':
+            self.run_command(command_split)
+        elif show_in == 'quick_panel':
+            self.run_command(command_split, self.show_in_quick_panel)
+        elif show_in == 'new_tab':
+            self.run_command(command_split, self.show_in_new_tab)
+        elif show_in == 'suppress':
+            self.run_command(command_split, self.do_nothing)
+
+    def show_in_quick_panel(self, result):
+        self.results = list(result.rstrip().split('\n'))
+        if len(self.results):
+            self.quick_panel(self.results,
+                             self.do_nothing, sublime.MONOSPACE_FONT)
+        else:
+            sublime.status_message("Nothing to show")
+
+    def do_nothing(self, picked):
+        return
+
+    def show_in_new_tab(self, result):
+        msg = self.window.new_file()
+        msg.set_scratch(True)
+        msg.set_name(self.command)
+        self._output_to_view(msg, result)
+        msg.sel().clear()
+        msg.sel().add(sublime.Region(0, 0))
 
 
 class RepoSyncCommand(RepoTextCommand):
