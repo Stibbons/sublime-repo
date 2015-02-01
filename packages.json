@@ -1,0 +1,29 @@
+{
+    "schema_version": "3.0.0",
+    "packages": [
+        {
+            "name": "Repo",
+            "details": "https://github.com/Stibbons/sublime-repo",
+            "description": "Git-repo command support",
+            "homepage": "http://sublime-repo.github.io/sublime-repo/",
+            "author": "Gaetan Semet",
+            "readme": "https://raw.github.com/Stibbons/sublime-repo/master/README.rst",
+            "donate": "http://sublime-repo.github.io/sublime-repo/donate.html",
+            "labels": ["repo", "git"],
+            "releases": [
+                {
+                    "sublime_text": "<3000",
+                    "version": "1.0.0",
+                    "url": "https://github.com/Stibbons/sublime-repo/archive/v1.0.0.zip",
+                    "date": "2015-02-02 00:00:00"
+                },
+                {
+                    "sublime_text": ">=3000",
+                    "version": "1.0.0",
+                    "url": "https://github.com/Stibbons/sublime-repo/archive/v1.0.0.zip",
+                    "date": "2015-02-02 00:00:00"
+                }
+            ]
+        }
+    ]
+}

@@ -1,0 +1,9 @@
+SublimeRepo
+===========
+
+Add support for the 'git-repo' tool ('repo' command)
+
+
+Features:
+---------
+
