@@ -1,0 +1,21 @@
+[
+    {   "caption": "Repo: Status",
+        "command": "repo_status"
+    },
+    {
+        "caption": "Repo: Rebase",
+        "command": "repo_rebase"
+    },
+    {
+        "caption": "Repo: Rebase Autostash",
+        "command": "repo_rebase_autostash"
+    },
+    {
+        "caption": "Repo: Sync + Rebase Autostash",
+        "command": "repo_sync_rebase_autostash"
+    },
+    {
+        "caption": "Repo: Sync",
+        "command": "repo_sync"
+    }
+]

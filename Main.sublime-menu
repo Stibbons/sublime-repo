@@ -1,0 +1,71 @@
+[
+    {
+        "id": "tools",
+        "children": [
+            {
+                "caption": "Repo",
+                "children": [
+                    {
+                        "caption": "Sync",
+                        "command": "repo_sync"
+                    },
+                    {
+                        "caption": "Rebase",
+                        "command": "repo_rebase"
+                    },
+                    {
+                        "caption": "Rebase Autostash",
+                        "command": "repo_rebase_autostash"
+                    },
+                    {
+                        "caption": "Rebase Sync + Rebase Autostash ",
+                        "command": "repo_sync_rebase_autostash"
+                    },
+                    {
+                        "caption": "-"
+                    },
+                    {
+                        "caption": "Upload",
+                        "command": "repo_upload"
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "caption": "Preferences",
+        "mnemonic": "n",
+        "id": "preferences",
+        "children": [
+            {
+                "caption": "Package Settings",
+                "mnemonic": "P",
+                "id": "package-settings",
+                "children": [
+                    {
+                        "caption": "Repo",
+                        "children": [
+                            {
+                                "command": "open_file",
+                                "args": {
+                                    "file": "${packages}/Repo/Repo.sublime-settings"
+                                },
+                                "caption": "Settings – Default"
+                            },
+                            {
+                                "command": "open_file",
+                                "args": {
+                                    "file": "${packages}/User/Repo.sublime-settings"
+                                },
+                                "caption": "Settings – User"
+                            },
+                            {
+                                "caption": "-"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+]
